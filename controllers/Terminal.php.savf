@@ -1,0 +1,154 @@
+<?php
+
+defined('BASEPATH') OR exit('No direct script access allowed');
+/*
+ * To change this license header, choose License Headers in Project Properties.
+ * To change this template file, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+class Terminal extends MY_Controller
+{
+    public $passdb;
+    private $api_key;
+    private $api_pass;
+    
+    public function __construct()
+    {
+        parent::__construct();
+        $this->is_logged_in();
+        if( ! isset( $this->auth_user_id ) ) 
+        {
+            redirect( secure_site_url('pages/') );         
+	}
+        $this->passdb = $this->auth_client_id;
+        $this->load->library('table','form_validation');
+        $this->load->helper('form', 'url');
+        $this->load->model('users_model', '', TRUE);
+        $this->load->model('clients_model', '', TRUE); 
+        $this->load->model('applications_model', '', TRUE);
+        $this->load->model('loans_model', '', TRUE);
+        $this->load->model("terminal_model", '', TRUE);
+        $this->load->model("client","", TRUE);
+        $this->load->helper(array("dropdown_helper","form"));
+        
+        $this->api_key = $this->terminal_model->getApiKey();
+        $this->api_pass = $this->terminal_model->getApiPass();
+    }
+
+    public function index($offset = 0, $order_column = 'app_id', $order_type = 'desc') 
+    {
+        $this->is_logged_in();
+        if( ! isset( $this->auth_user_id ) )
+        {
+            redirect( secure_site_url('pages/') );         
+        } 
+        
+        $data = array();
+        $data["title"] = "Pagasys Virtual Terminal";
+        $data["headline"] = "Virtual Terminal";
+        $data['user'] = $this->auth_user_id;
+        $data['client'] = $this->auth_client_id;
+        $data["States"] = listData($this->passdb, "states", "state_abbrev", "state_name");
+        $data["api_key"] = $this->api_key;
+        $data["api_pass"] = $this->api_pass;
+        $this->template->load('terminal', 'terminal/card_payment', $data);
+    }
+    
+    public function echeck($offset = 0, $order_column = "app_id", $order_type = "desc")
+    {
+                $this->is_logged_in();
+        if( ! isset( $this->auth_user_id ) )
+        {
+            redirect( secure_site_url('pages/') );         
+        } 
+        
+        $data = array();
+        $data["title"] = "Pagasys Virtual Terminal";
+        $data["headline"] = "Virtual Terminal";
+        $data['user'] = $this->auth_user_id;
+        $data['client'] = $this->auth_client_id;
+        $data["States"] = listData($this->passdb, "states", "state_abbrev", "state_name");
+        $this->template->load('terminal', 'terminal/echeck', $data);
+    }
+    
+    public function result($offset = 0, $order_column = "app_id", $order_type = "desc")
+    {
+        $data = array();
+        $data["title"] = "Pagasys Virtual Terminals";
+        $data["headline"] = "Virtual Terminal";
+        $data['user'] = $this->auth_user_id;
+        $data['client'] = $this->auth_client_id;
+        $this->template->load('terminal', 'terminal/result', $data);
+    }
+    
+    public function process($offset = 0, $order_column = "app_id", $order_type = "desc")
+    { 
+        //handle the payment and processing fees
+        $model = $this->terminal_model->getProcessingModel();
+        $payment = $this->input->post("payment");
+        $processing_fee = 0;
+        if($model["type"] == "PCT")
+        {
+            $processing_fee = $payment * $model["percent"];
+        }
+        else if($model["type"] == "CONV")
+        {
+            $processing_fee = $model["conv_fee"];
+            $payment += $processing_fee; 
+        }
+        else if($model["type"] == "MIX")
+        {
+            $processing_fee = ($model["percent"] * $payment) + $model["conv_fee"];
+            $payment += $model["conv_fee"];
+        }
+       
+         $api_user = $this->terminal_model->getApiKey();
+         $api_pass = $this->terminal_model->getApiPass();
+         $card_num = $this->input->post("card_num");
+         $ccv = $this->input->post("ccv");
+         $card_type = $this->input->post("type");
+         $amount = $this->input->post("payment");
+         $exp = $this->input->post("exp");
+         $name = $this->input->post("name");
+         $cust_id = $this->input->post("cust_id");
+         $address = $this->input->post("address");
+         $city = $this->input->post("city");
+         $state = $this->input->post("state");
+         $zip = $this->input->post("zip");  
+        
+        
+        $soap = new SoapClient("http://ezpay.host/Pegasys/PegasysAPI/wsdl.wsdl", array("trace"=>true, "cache_wsdl"=>WSDL_CACHE_NONE));
+        $result = $soap->processCreditCard($api_user, $api_pass, "Sale", $card_num, $ccv, $card_type, $amount, $exp, $name, $cust_id, $address, $city, $state, $zip);
+        $dat = array("CUST_ID" => $cust_id, "CARD_NUM" => $card_num, "DATE" => date("Y-m-d"), "AMOUNT" => $payment);
+        $this->terminal_model->storeTran($dat); 
+        
+        $dat2 = array("cc_id" => "", "name_on_card" => $name, "cc_type" => $card_type, "expire_month" => date("m", strtotime($exp)));
+        $dat2["expire_year"] = date("Y", date("Y", strtotime($exp)));
+        $dat2["card_security"] = $ccv;
+        $dat2["cc_address"] = $address;
+        $dat2["cc_state"] = $state;
+        $dat2["cc_zip"] = $zip;
+        $dat2["cc_debit"] = "";
+        $dat2["cc_status"] = "";
+        $this->terminal_model->storeCardHolder($dat2);
+        
+        //var_dump($result); 
+        $resp = json_decode($result);
+        
+        $data = array();
+        $data["title"] = "Pagasys Virtual Terminals";
+        $data["headline"] = "Virtual Terminal";
+        $data['user'] = $this->auth_user_id;
+        $data['client'] = $this->auth_client_id;
+        $data["result"] = $result;
+        $data["exp"] = $exp;
+        $data["status"] = "Approved";// $resp->status == "PendingSettlement" ? "Approved" : "Decline";
+        $data["refId"] = rand(10000, 99999); //$resp->referenceId;
+        $data["auth"] = rand(20000, 120000);
+        $this->template->load('terminal', 'terminal/result', $data);
+        
+        
+    }
+
+}
